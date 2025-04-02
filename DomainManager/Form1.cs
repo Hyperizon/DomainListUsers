@@ -1,5 +1,6 @@
-using OfficeOpenXml;
+﻿using OfficeOpenXml;
 using OfficeOpenXml.FormulaParsing.Excel.Functions.RefAndLookup;
+using System.Data;
 using System.DirectoryServices;
 
 namespace DomainManager
@@ -11,15 +12,22 @@ namespace DomainManager
             InitializeComponent();
         }
 
-        Dictionary<string, DateTime> userDictionary = new Dictionary<string, DateTime>();
-
-        private void ListDomainUsers(string ip, string domainName, DateTime? filteredDate = null)
+        private void ListDomainUsers(string ip, string domainName, string username, string password, DateTime? filteredDate = null)
         {
             try
             {
-                listBox1.Items.Clear();
+                dataGridView1.DataSource = null;
+                dataGridView1.Rows.Clear();
+                dataGridView1.Columns.Clear();
 
-                DirectoryEntry entry = new DirectoryEntry($"LDAP://{ip}/DC={domainName},DC=local");
+                DataTable table = new DataTable();
+                table.Columns.Add("Username", typeof(string));
+                table.Columns.Add("Last Logon", typeof(string));
+
+                string baseDn = ConvertDomainToBaseDn(domainName);
+                string ldapPath = $"LDAP://{ip}/{baseDn}";
+
+                DirectoryEntry entry = new DirectoryEntry(ldapPath, username, password);
                 DirectorySearcher searcher = new DirectorySearcher(entry);
 
                 searcher.Filter = "(&(objectClass=user)(objectCategory=person))";
@@ -29,26 +37,35 @@ namespace DomainManager
                 SearchResultCollection results = searcher.FindAll();
                 foreach (SearchResult result in results)
                 {
-                    string? username = result.Properties["samaccountname"].Count > 0 ? result.Properties["samaccountname"][0].ToString() : "Unknown Username";
+                    string? dcUsername = result.Properties["samaccountname"].Count > 0 ? result.Properties["samaccountname"][0].ToString() : "Unknown Username";
                     long lastLogon = result.Properties["lastLogon"].Count > 0 ? (long)result.Properties["lastLogon"][0] : 0;
 
                     DateTime lastLogonDate = DateTime.FromFileTime(lastLogon);
 
                     if (filteredDate.HasValue && lastLogonDate >= filteredDate.Value) continue;
 
-                    listBox1.Items.Add(username!);
-                    userDictionary.TryAdd(username!, lastLogonDate);
+                    string lastLogonDisplay = lastLogonDate == DateTime.MinValue ? "Hiç giriş yapmadı" : lastLogonDate.ToString("yyyy-MM-dd HH:mm");
+
+                    table.Rows.Add(dcUsername, lastLogonDisplay);
                 }
+
+                dataGridView1.DataSource = table;
+                dataGridView1.AutoSizeColumnsMode = DataGridViewAutoSizeColumnsMode.Fill;
             }
             catch (Exception e)
             {
                 MessageBox.Show(e.Message);
             }
         }
+        private string ConvertDomainToBaseDn(string domainName)
+        {
+            var parts = domainName.Split('.');
+            return string.Join(",", parts.Select(p => $"DC={p}"));
+        }
 
         private void button1_Click(object sender, EventArgs e)
         {
-            ListDomainUsers(textBox1.Text, textBox2.Text, dateTimePicker1.Value);
+            ListDomainUsers(textBox1.Text, textBox2.Text, textBox3.Text, textBox4.Text, dateTimePicker1.Value);
         }
 
         private void button2_Click(object sender, EventArgs e)
@@ -56,27 +73,29 @@ namespace DomainManager
             using ExcelPackage excel = new ExcelPackage();
             var worksheet = excel.Workbook.Worksheets.Add("Sheet1");
 
-            worksheet.Cells[1,1].Value = "Username";
-            worksheet.Cells[1, 2].Value = "Last Logon";
-
-            int row = 2;
-
-            for (int i = 0; i <= userDictionary.Count; i++)
+            for (int col = 0; col < dataGridView1.Columns.Count; col++)
             {
-                foreach (var user in userDictionary)
+                worksheet.Cells[1, col + 1].Value = dataGridView1.Columns[col].HeaderText;
+            }
+
+            for (int row = 0; row < dataGridView1.Rows.Count; row++)
+            {
+                for (int col = 0; col < dataGridView1.Columns.Count; col++)
                 {
-                    worksheet.Cells[row, 1].Value = $"{user.Key}";
-                    worksheet.Cells[row, 2].Value = $"{user.Value}";
-                    row++;
+                    var value = dataGridView1.Rows[row].Cells[col].Value;
+                    worksheet.Cells[row + 2, col + 1].Value = value?.ToString();
                 }
             }
 
-            SaveFileDialog saveFileDialog = new SaveFileDialog();
-            saveFileDialog.Filter = "Excel files|*.xlsx";
-            saveFileDialog.Title = "Save an Excel File";
+            using SaveFileDialog saveFileDialog = new SaveFileDialog();
+            saveFileDialog.Filter = "Excel files (*.xlsx)|*.xlsx";
+            saveFileDialog.Title = "Excel dosyasını kaydet";
+
             if (saveFileDialog.ShowDialog() == DialogResult.OK)
             {
-                excel.SaveAs(new FileInfo(saveFileDialog.FileName));
+                FileInfo fi = new FileInfo(saveFileDialog.FileName);
+                excel.SaveAs(fi);
+                MessageBox.Show("✅ Excel dosyası başarıyla kaydedildi.", "Başarılı", MessageBoxButtons.OK, MessageBoxIcon.Information);
             }
         }
     }
